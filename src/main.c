@@ -2,7 +2,35 @@
 
 #include "networking.h"
 
+inline void read_line(char* buffer, u32 buffer_size)
+{
+	memory_zero(buffer, buffer_size);
+	fgets(buffer, buffer_size, stdin);
+	u32 size = string_size(buffer);
+	if (size) buffer[size - 1] = '\0';
+}
+
+inline b8 read_u32(u32* n)
+{
+	char str[40];
+	read_line(str, 40);
+	return string_to_u32(n, str);
+}
+
 #ifdef SERVER
+
+static void new_connection(u32 client_id, b8 connection)
+{
+	if (connection)
+		SV_LOG_INFO("New Connection: %u\n", client_id);
+	else
+		SV_LOG_INFO("Client Disconnected: %u\n", client_id);
+}
+
+static void new_message(u32 client_id, const void* msg, u32 size)
+{
+	SV_LOG_INFO("New Message(%u): %u\n", client_id, size);
+}
 
 int main()
 {
@@ -19,16 +47,46 @@ int main()
 		return 1;
 	}
 
-	if (!web_server_initialize(54000, 1000)) {
+	u32 port;
+	
+	while (1) {
+
+		print("Port: ");
+		b8 valid = read_u32(&port);
+
+		if (!valid)
+			print("Invalid port!\n");
+		else break;
+	}
+
+	if (!web_server_initialize(port, 1000, new_connection, new_message)) {
 		SV_LOG_ERROR("Can't start the server\n");
 		return 1;
 	}
 	
 	while (hosebase_frame_begin()) {
+
+		char str[5000];
+		read_line(str, 5000);
+
+		if (string_equals(str, "exit")) {
+			break;
+		}
+		if (string_equals(str, "help")) {
+			print("TODO\n");
+		}
+		if (string_equals(str, "say")) {
+
+			print("Say: ");
+			read_line(str, 5000);
+			web_server_send(NULL, 0, str, string_size(str) + 1);
+		}
+		else print("Invalid command\n");
+		
 		hosebase_frame_end();
 	}
 
-	// TODO: web_server_close();
+	web_server_close();
 
 	net_close();
 
@@ -39,6 +97,19 @@ int main()
 
 #else
 
+static void new_message(const void* msg, u32 size)
+{
+	SV_LOG_INFO("New Message: %u\n", size);
+}
+
+static void disconnect(DisconnectReason reason)
+{
+	if (reason == DisconnectReason_ServerDisconnected)
+		SV_LOG_INFO("Server Disconnected :(\n");
+	else
+		SV_LOG_INFO("WTF\n");
+}
+
 int main()
 {
 	HosebaseInitializeDesc desc;
@@ -54,18 +125,45 @@ int main()
 		return 1;
 	}
 
-	if (!web_client_initialize("192.168.216.235", 54000, 1000)) {
+	char ip[40];
+	print("IP: ");
+	read_line(ip, 40);
+
+	u32 port;
+	
+	while (1) {
+
+		print("Port: ");
+		b8 valid = read_u32(&port);
+
+		if (!valid)
+			print("Invalid port!\n");
+		else break;
+	}
+
+	if (!web_client_initialize(ip, port, 1000, new_message, disconnect)) {
 		SV_LOG_ERROR("Can't start the client\n");
 		return 1;
 	}
 	
 	while (hosebase_frame_begin()) {
 
-		if (input_key(Key_A, InputState_Released)) {
+		char str[5000];
+		read_line(str, 5000);
 
-			const char* buffer = "Miaaau :)";
-			web_client_send(buffer, string_size(buffer) + 1);
+		if (string_equals(str, "exit")) {
+			break;
 		}
+		if (string_equals(str, "help")) {
+			print("TODO\n");
+		}
+		if (string_equals(str, "say")) {
+
+			print("Say: ");
+			read_line(str, 5000);
+			web_client_send(str, string_size(str) + 1);
+		}
+		else print("Invalid command\n");
 
 		hosebase_frame_end();
 	}
