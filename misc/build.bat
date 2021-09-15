@@ -19,7 +19,7 @@ SHIFT
 GOTO arg_loop
 :end_arg_loop
 
-SET name=net
+SET name=Networking
 
 SET common_compiler_flags= /std:c++17 /EHsc -wd4047 -wd4311 -wd4312 /Zi -nologo
 
@@ -31,7 +31,7 @@ IF "%server%"=="1" (
   SET defines= %defines% -DSERVER
   SET out= build_server
 ) ELSE (
-  SET defines= %defines% -DSV_GRAPHICS=1
+  SET defines= %defines%
   SET out= build_client
 )
 

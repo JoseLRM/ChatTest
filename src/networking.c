@@ -5,6 +5,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 typedef struct {
+	u32 id;
 	struct sockaddr_in hint;
 } ClientRegister;
 
@@ -18,6 +19,7 @@ typedef struct {
 	u32 buffer_capacity;
 
 	ClientRegister* registred_clients;
+	u32 client_id_count;
 	
 } ServerData;
 
@@ -30,7 +32,8 @@ typedef struct {
 	b8 running;
 	u8* buffer;
 	u32 buffer_capacity;
-	
+	u32 id;
+
 } ClientData;
 
 typedef struct {
@@ -43,6 +46,7 @@ typedef struct {
 } NetData;
 
 #define HEADER_TYPE_CONNECT 0x00
+#define HEADER_TYPE_ACCEPT 0x69
 #define HEADER_TYPE_CUSTOM 0x69
 #define HEADER_TYPE_DISCONNECT 0xFF
 
@@ -51,9 +55,28 @@ typedef struct {
 	u8 type;
 } NetHeader;
 
+typedef struct {
+
+	NetHeader header;
+	u32 client_id;
+
+} NetMessageAccept;
+
 static NetData* net;
 
 /////////////////////////////////////////////// SERVER /////////////////////////////////////////////////////////
+
+inline b8 _server_send(const void* data, u32 size, struct sockaddr_in dst)
+{
+	int ok = sendto(net->server.socket, data, size, 0, (struct sockaddr*)&dst, sizeof(dst));
+
+	if (ok == SOCKET_ERROR) {
+		SV_LOG_ERROR("Can't send data to the client\n");
+		return FALSE;
+	}
+
+	return TRUE;
+}
 
 inline void register_client_if_not_exists(struct sockaddr_in client)
 {
@@ -78,6 +101,17 @@ inline void register_client_if_not_exists(struct sockaddr_in client)
 		inet_ntop(AF_INET, &client.sin_addr, client_ip, 256);
 		
 		SV_LOG_INFO("Client Connected: '%s'\n", client_ip);
+
+		// Send accept message
+		{
+			NetMessageAccept msg;
+
+			msg.header.type = HEADER_TYPE_ACCEPT;
+			msg.header.size = sizeof(NetMessageAccept) - sizeof(NetHeader);
+			msg.client_id = ++s->client_id_count;
+
+			_server_send(&msg, sizeof(msg), client);
+		}
 	}
 }
 
@@ -261,7 +295,7 @@ b8 web_client_initialize(const char* ip, u32 port, u32 buffer_capacity)
 	b8 recived = FALSE;
 
 	// Bind
-	/*{
+	/* {
 		i32 res = bind(d->socket, (struct sockaddr*)&d->server_hint, sizeof(struct sockaddr_in));
 
 		if (res == SOCKET_ERROR) {
@@ -269,7 +303,7 @@ b8 web_client_initialize(const char* ip, u32 port, u32 buffer_capacity)
 			SV_LOG_ERROR("Can't connect client socket\n");
 			return FALSE;
 		}
-		}*/
+	}*/
 
 	// Send connection message
 	{
