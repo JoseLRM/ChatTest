@@ -23,7 +23,7 @@ SET name=Networking
 
 SET common_compiler_flags= /std:c++17 /EHsc -wd4047 -wd4311 -wd4312 /Zi -nologo
 
-SET defines= -DSV_PLATFORM_WINDOWS=1 -DSV_SLOW=1
+SET defines= -DSV_PLATFORM_WINDOWS=1 -DSV_SLOW=1 -DSV_NETWORKING=1
 
 SET out= 
 
@@ -42,7 +42,6 @@ SET libs= %VULKAN_SDK%\Lib\vulkan-1.lib w:\Hosebase\external\sprv\sprv.lib
 SET link=
 SET src=
 SET src= %src% w:\%name%\src\main.c
-SET src= %src% w:\%name%\src\networking.c
 
 IF "%base%"=="1" (
    SET src= %src% w:\Hosebase\build_unit.c w:\Hosebase\src\vulkan\graphics_vulkan.cpp w:\Hosebase\src\vulkan\graphics_vulkan_pipeline.cpp

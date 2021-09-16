@@ -1,7 +1,5 @@
 #include "Hosebase/hosebase.h"
 
-#include "networking.h"
-
 inline void read_line(char* buffer, u32 buffer_size)
 {
 	memory_zero(buffer, buffer_size);
