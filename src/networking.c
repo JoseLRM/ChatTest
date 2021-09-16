@@ -104,13 +104,25 @@ inline b8 _server_send(const void* data, u32 size, struct sockaddr_in dst)
 	return TRUE;
 }
 
-inline b8 _server_send_all(const void* data, u32 size)
+inline b8 _server_send_all(const void* data, u32 size, u32* clients_to_ignore, u32 client_count)
 {
 	ServerData* s = net->server;
 	b8 res = TRUE;
 	
 	foreach(i, array_size(&s->registred_clients)) {
-			
+
+		b8 ignore = FALSE;
+
+		foreach(j, client_count) {
+
+			if (s->registred_clients[i].id == clients_to_ignore[j]) {
+				ignore = TRUE;
+				break;
+			}
+		}
+		
+		if (ignore) continue;
+
 		if (!_server_send(data, size, s->registred_clients[i].hint)) {
 			res = FALSE;
 		}
@@ -378,7 +390,7 @@ void web_server_close()
 		header.type = HEADER_TYPE_DISCONNECT;
 		header.size = 0;
 
-		_server_send_all(&header, sizeof(NetHeader));
+		_server_send_all(&header, sizeof(NetHeader), NULL, 0);
 	
 		thread_wait(s->thread);
 		closesocket(s->socket);
@@ -388,7 +400,7 @@ void web_server_close()
 	}
 }
 
-b8 web_server_send(u32* clients, u32 client_count, const void* data, u32 size)
+b8 web_server_send(u32* clients, u32 client_count, b8 ignore, const void* data, u32 size)
 {
 	ServerData* s = net->server;
 
@@ -404,9 +416,9 @@ b8 web_server_send(u32* clients, u32 client_count, const void* data, u32 size)
 
 	b8 res = TRUE;
 	
-	if (client_count == 0) {
+	if (ignore || client_count == 0) {
 
-		res = _server_send_all(buffer, buffer_size);
+		res = _server_send_all(buffer, buffer_size, clients, ignore ? client_count : 0);
 	}
 	else {
 		// TODO

@@ -17,6 +17,62 @@ inline b8 read_u32(u32* n)
 	return string_to_u32(n, str);
 }
 
+#pragma pack(push)
+#pragma pack(1)
+
+typedef enum {
+	HeaderType_ServerMessage,
+	HeaderType_ClientMessage
+} HeaderType;
+
+typedef struct {
+	HeaderType type;
+} Header;
+
+typedef struct {
+	Header header;
+	u32 client_id;
+} ServerMessage;
+
+typedef struct {
+	Header header;
+} ClientMessage;
+
+#pragma pack(pop)
+
+static void send_server_message(u32 client_id, const char* str)
+{
+	u8 new_msg[5000];
+	memory_zero(new_msg, 5000);
+
+	ServerMessage s;
+	s.header.type = HeaderType_ServerMessage;
+	s.client_id = client_id;
+
+	u32 size = string_size(str);
+
+	memory_copy(new_msg, &s, sizeof(s));
+	memory_copy(new_msg + sizeof(s), str, size);
+
+	web_server_send(&client_id, 1, TRUE, new_msg, sizeof(s) + size);
+}
+
+static void send_client_message(const char* str)
+{
+	u8 new_msg[5000];
+	memory_zero(new_msg, 5000);
+
+	ClientMessage s;
+	s.header.type = HeaderType_ClientMessage;
+
+	u32 size = string_size(str);
+
+	memory_copy(new_msg, &s, sizeof(s));
+	memory_copy(new_msg + sizeof(s), str, size);
+
+	web_client_send(new_msg, sizeof(s) + size);
+}
+
 #ifdef SERVER
 
 static void new_connection(u32 client_id, b8 connection)
@@ -27,11 +83,23 @@ static void new_connection(u32 client_id, b8 connection)
 		SV_LOG_INFO("Client Disconnected: %u\n", client_id);
 }
 
-static void new_message(u32 client_id, const void* msg, u32 size)
+static void new_message(u32 client_id, const void* data, u32 size)
 {
-	const char* str = (const char*)msg;
-	//SV_LOG_INFO("New Message(%u): %u\n", client_id, size);
-	print("%u: %s\n", client_id, str);
+	const Header* header = data;
+
+	switch (header->type)
+	{
+
+	case HeaderType_ClientMessage:
+	{
+		const char* str = (const char*)(header + 1);
+
+		print("%u: %s\n", client_id, str);
+		send_server_message(client_id, str);
+	}
+	break;
+
+	}
 }
 
 int main()
@@ -81,7 +149,7 @@ int main()
 
 			print("Say: ");
 			read_line(str, 5000);
-			web_server_send(NULL, 0, str, string_size(str) + 1);
+			send_server_message(u32_max, str);
 		}
 		else print("Invalid command\n");
 		
@@ -99,11 +167,29 @@ int main()
 
 #else
 
-static void new_message(const void* msg, u32 size)
+static void new_message(const void* data, u32 size)
 {
-	//SV_LOG_INFO("New Message: %u\n", size);
-	const char* str = msg;
-	print("Server: %s\n", str);
+	const Header* header = data;
+
+	switch (header->type)
+	{
+	
+	case HeaderType_ServerMessage:
+	{
+		const ServerMessage* msg = data;
+
+		u32 client_id = msg->client_id;
+
+		const char* str = (const char*)(msg + 1);
+		if (client_id == u32_max)
+			print("ADMIN: %s\n", str);
+		else
+			print("%u: %s\n", client_id, str);
+	}
+	break;
+
+	}
+	
 }
 
 static void disconnect(DisconnectReason reason)
@@ -169,7 +255,7 @@ int main()
 
 			print("Say: ");
 			read_line(str, 5000);
-			web_client_send(str, string_size(str) + 1);
+			send_client_message(str);
 		}
 		else print("Invalid command\n");
 
