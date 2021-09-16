@@ -114,10 +114,6 @@ int main()
 		return 1;
 	}
 
-	if (!net_initialize()) {
-		return 1;
-	}
-
 	u32 port;
 	
 	while (1) {
@@ -158,8 +154,6 @@ int main()
 	}
 
 	web_server_close();
-
-	net_close();
 
 	hosebase_close();
 
@@ -212,10 +206,6 @@ int main()
 		return 1;
 	}
 
-	if (!net_initialize()) {
-		return 1;
-	}
-
 	char ip[40];
 	print("IP: ");
 	read_line(ip, 40);
@@ -264,9 +254,6 @@ int main()
 	}
 
 	web_client_close();
-
-	net_close();
-
 	hosebase_close();
 
 	return 0;
