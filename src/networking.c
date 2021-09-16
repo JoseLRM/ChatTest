@@ -59,6 +59,7 @@ typedef struct {
 #pragma pack(push)
 #pragma pack(1)
 
+// TODO: Some data compression
 typedef struct {
 	u32 size;
 	u8 type;
@@ -77,6 +78,13 @@ typedef struct {
 	u32 client_id;
 
 } NetMessageDisconnect;
+
+typedef struct {
+
+	NetHeader header;
+	u32 client_id;
+
+} NetMessageCustom;
 
 #pragma pack(pop)
 
@@ -179,7 +187,7 @@ inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
 
 		struct timeval time;
 		time.tv_sec = 0;
-		time.tv_usec = timeout;
+		time.tv_usec = timeout * 1000;
 
 		i32 res = select(0, &set, NULL, NULL, &time);
 
@@ -259,24 +267,19 @@ static u32 server_loop(void* arg)
 
 			case HEADER_TYPE_CUSTOM_FROM_CLIENT:
 			{
-				// TODO
-				u32 id = u32_max;
+				NetMessageCustom* msg = (NetMessageCustom*)header;
+				
+				u32 id = msg->client_id;
 
-				foreach(i, array_size(&s->registred_clients)) {
-
-					if (s->registred_clients[i].hint.sin_addr.S_un.S_addr == client.sin_addr.S_un.S_addr) {
-						id = s->registred_clients[i].id;
-					}
-				}
-
-				if (id == u32_max) {
+				// TODO: Check if is valid
+				if (FALSE) {
 					SV_LOG_ERROR("Can't recive a client message, the ID '%u' is not registred\n", id);
 				}
 				else {
 					
 					// Callback
 					if (s->message_fn) {
-						s->message_fn(id, header + 1, header->size);
+						s->message_fn(id, msg + 1, header->size);
 					}
 				}
 		
@@ -300,20 +303,35 @@ b8 web_server_initialize(u32 port, u32 buffer_capacity, WebServerConnectionFn co
 	net->server = memory_allocate(sizeof(ServerData));
 	ServerData* s = net->server;
 	
-	s->socket = socket(AF_INET, SOCK_DGRAM, 0);
+	// Create socket
+	{
+		s->socket = socket(AF_INET, SOCK_DGRAM, 0);
 
-	SV_ZERO(s->hint);
-				
-	s->hint.sin_addr.S_un.S_addr = ADDR_ANY;
-	s->hint.sin_family = AF_INET;
-	s->hint.sin_port = htons(port); // From little to big endian
+		if (s->socket == INVALID_SOCKET) {
+
+			SV_LOG_ERROR("Can't create the server socket\n");
+			goto error;
+		}
+	}
+
+	// Fill hint
+	{
+		SV_ZERO(s->hint);
+
+		s->hint.sin_addr.S_un.S_addr = ADDR_ANY;
+		s->hint.sin_family = AF_INET;
+		s->hint.sin_port = htons(port); // From little to big endian
+	}
+
+	// Bind socket
 
 	if (bind(s->socket, (struct sockaddr*)&s->hint, sizeof(struct sockaddr_in)) == SOCKET_ERROR) {
 
 		SV_LOG_ERROR("Can't connect server socket\n");
-		return FALSE;
+		goto error;
 	}
 
+	// Initialize some data
 	s->running = TRUE;
 	s->buffer_capacity = SV_MAX(buffer_capacity, 1000);
 	s->buffer = memory_allocate(s->buffer_capacity);
@@ -323,9 +341,30 @@ b8 web_server_initialize(u32 port, u32 buffer_capacity, WebServerConnectionFn co
 	// TEMP
 	s->registred_clients = array_init(ClientRegister, 10, 1.5f);
 
+	// Start server thread
 	s->thread = thread_create(server_loop, NULL);
 
-	return s->thread != NULL;
+	if (s->thread == NULL)
+		goto error;
+
+	goto success;
+error:
+	if (s) {
+
+		if (s->socket != INVALID_SOCKET) {
+			closesocket(s->socket);
+		}
+
+		s->running = FALSE;
+
+		if (s->thread) thread_destroy(s->thread);
+
+		memory_free(s);
+		net->server = NULL;
+	}
+	return FALSE;
+success:
+	return TRUE;
 }
 
 void web_server_close()
@@ -401,7 +440,7 @@ inline NetHeader* client_recive_message(u32 timeout)
 
 		struct timeval time;
 		time.tv_sec = 0;
-		time.tv_usec = timeout;
+		time.tv_usec = timeout * 1000;
 
 		i32 res = select(0, &set, NULL, NULL, &time);
 
@@ -562,18 +601,19 @@ void web_client_close()
 
 b8 web_client_send(const void* data, u32 size)
 {
-	NetHeader header;
-	header.type = HEADER_TYPE_CUSTOM_FROM_CLIENT;
-	header.size = size;
+	NetMessageCustom msg;
+	msg.header.type = HEADER_TYPE_CUSTOM_FROM_CLIENT;
+	msg.header.size = size + sizeof(u32);
+	msg.client_id = net->client->id;
+
 
 	// TODO
 	u8 b[1000];
 	memory_zero(b, 1000);
-	memory_copy(b, &header, sizeof(header));
-	
-	memory_copy(b + sizeof(header), data, size);
+	memory_copy(b, &msg, sizeof(msg));
+	memory_copy(b + sizeof(msg), data, size);
 
-	return _client_send(b, sizeof(header) + size);
+	return _client_send(b, sizeof(msg) + size);
 }
 
 b8 net_initialize()

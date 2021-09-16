@@ -29,7 +29,9 @@ static void new_connection(u32 client_id, b8 connection)
 
 static void new_message(u32 client_id, const void* msg, u32 size)
 {
-	SV_LOG_INFO("New Message(%u): %u\n", client_id, size);
+	const char* str = (const char*)msg;
+	//SV_LOG_INFO("New Message(%u): %u\n", client_id, size);
+	print("%u: %s\n", client_id, str);
 }
 
 int main()
@@ -99,7 +101,9 @@ int main()
 
 static void new_message(const void* msg, u32 size)
 {
-	SV_LOG_INFO("New Message: %u\n", size);
+	//SV_LOG_INFO("New Message: %u\n", size);
+	const char* str = msg;
+	print("Server: %s\n", str);
 }
 
 static void disconnect(DisconnectReason reason)
@@ -128,6 +132,10 @@ int main()
 	char ip[40];
 	print("IP: ");
 	read_line(ip, 40);
+
+	if (string_size(ip) == 0) {
+		string_copy(ip, "192.168.216.235", 40);
+	}
 
 	u32 port;
 	
