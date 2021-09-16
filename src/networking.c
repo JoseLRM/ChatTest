@@ -18,10 +18,12 @@ typedef struct {
 	u8* buffer;
 	u32 buffer_capacity;
 
-	ClientRegister* registred_clients;
+	ClientRegister* clients;
+	u32 client_capacity;
 	u32 client_id_count;
 
-	WebServerConnectionFn connection_fn;
+	WebServerAcceptFn accept_fn;
+	WebServerDisconnectFn disconnect_fn;
 	WebServerMessageFn message_fn;
 	
 } ServerData;
@@ -54,7 +56,8 @@ typedef struct {
 #define HEADER_TYPE_ACCEPT 0x12
 #define HEADER_TYPE_CUSTOM_FROM_SERVER 0x32
 #define HEADER_TYPE_CUSTOM_FROM_CLIENT 0x69
-#define HEADER_TYPE_DISCONNECT 0xFF
+#define HEADER_TYPE_DISCONNECT_CLIENT 0xFE
+#define HEADER_TYPE_DISCONNECT_SERVER 0xFF
 
 #pragma pack(push)
 #pragma pack(1)
@@ -77,7 +80,7 @@ typedef struct {
 	NetHeader header;
 	u32 client_id;
 
-} NetMessageDisconnect;
+} NetMessageDisconnectClient;
 
 typedef struct {
 
@@ -109,13 +112,16 @@ inline b8 _server_send_all(const void* data, u32 size, u32* clients_to_ignore, u
 	ServerData* s = net->server;
 	b8 res = TRUE;
 	
-	foreach(i, array_size(&s->registred_clients)) {
+	foreach(i, s->client_capacity) {
 
 		b8 ignore = FALSE;
 
+		if (s->clients[i].id == 0)
+			continue;
+
 		foreach(j, client_count) {
 
-			if (s->registred_clients[i].id == clients_to_ignore[j]) {
+			if (s->clients[i].id == clients_to_ignore[j]) {
 				ignore = TRUE;
 				break;
 			}
@@ -123,7 +129,7 @@ inline b8 _server_send_all(const void* data, u32 size, u32* clients_to_ignore, u
 		
 		if (ignore) continue;
 
-		if (!_server_send(data, size, s->registred_clients[i].hint)) {
+		if (!_server_send(data, size, s->clients[i].hint)) {
 			res = FALSE;
 		}
 	}
@@ -137,10 +143,9 @@ inline void register_client_if_not_exists(struct sockaddr_in client)
 
 	b8 found = FALSE;
 
-	u32 size = array_size(&s->registred_clients);
-	foreach(i, size) {
+	foreach(i, s->client_capacity) {
 
-		if (s->registred_clients[i].hint.sin_addr.S_un.S_addr == client.sin_addr.S_un.S_addr) {
+		if (s->clients[i].hint.sin_addr.S_un.S_addr == client.sin_addr.S_un.S_addr) {
 			found = TRUE;
 			break;
 		}
@@ -148,45 +153,92 @@ inline void register_client_if_not_exists(struct sockaddr_in client)
 
 	if (!found) {
 
-		ClientRegister reg;
-		reg.hint = client;
-		reg.id = ++s->client_id_count;
-		array_push(&s->registred_clients, reg);
+		u32 index = u32_max;
 
-		char client_ip[256];
-		memory_zero(client_ip, 256);
-		inet_ntop(AF_INET, &client.sin_addr, client_ip, 256);
-		
-		SV_LOG_INFO("Client Connected: '%s'\n", client_ip);
+		foreach(i, s->client_capacity) {
 
-		// Send accept message
-		{
-			NetMessageAccept msg;
-
-			msg.header.type = HEADER_TYPE_ACCEPT;
-			msg.header.size = sizeof(NetMessageAccept) - sizeof(NetHeader);
-			msg.client_id = reg.id;
-
-			_server_send(&msg, sizeof(msg), client);
+			if (s->clients[i].id == 0) {
+				index = i;
+				break;
+			}
 		}
 
-		// Callback
-		if (s->connection_fn) {
-			s->connection_fn(reg.id, TRUE);
+		if (index != u32_max) {
+
+			ClientRegister reg;
+			reg.hint = client;
+			reg.id = ++s->client_id_count;
+			
+			char client_ip[256];
+			memory_zero(client_ip, 256);
+			inet_ntop(AF_INET, &client.sin_addr, client_ip, 256);
+
+			b8 accept;
+
+			if (s->accept_fn) {
+				accept = s->accept_fn(reg.id, client_ip);
+			}
+			else {
+				SV_LOG_INFO("Client Connected: '%s'\n", client_ip);
+				accept = TRUE;
+			}
+
+			if (accept) {
+				
+				// Send accept message
+				if (accept) {
+					NetMessageAccept msg;
+
+					msg.header.type = HEADER_TYPE_ACCEPT;
+					msg.header.size = sizeof(NetMessageAccept) - sizeof(NetHeader);
+					msg.client_id = reg.id;
+
+					_server_send(&msg, sizeof(msg), client);
+					
+					s->clients[index] = reg;
+				}
+			}
+		}
+		else {
+			
+			SV_LOG_ERROR("Can't connect more clients, the limit is %u\n", s->client_capacity);
 		}
 	}
 }
 
-inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
+inline void unregister_client(u32 id)
 {
-	i32 client_size = sizeof(*client);
-
 	ServerData* s = net->server;
 
-	SOCKET socket = s->socket;
-	u8* buffer = s->buffer;
-	u32 buffer_capacity = s->buffer_capacity;
+	if (id == 0) {
+		SV_LOG_ERROR("Can't disconnect client '%u', invalid id\n", id);
+	}
 
+	u32 index = u32_max;
+	
+	foreach(i, s->client_capacity) {
+
+		if (s->clients[i].id == id) {
+			index = i;
+			break;
+		}
+	}
+
+	if (index != u32_max) {
+
+		if (s->disconnect_fn)
+			s->disconnect_fn(id);
+
+		memory_zero(s->clients + index, sizeof(ClientRegister));
+	}
+	else {
+
+		SV_LOG_ERROR("Can't disconnect client '%u', doesn't exist\n");
+	}
+}
+
+inline NetHeader* _recive_message(u8* buffer, u32 buffer_capacity, SOCKET socket, u32 timeout, struct sockaddr* hint, i32* hint_size)
+{
 	memory_zero(buffer, buffer_capacity);
 
 	b8 recived = FALSE;
@@ -195,7 +247,7 @@ inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
 	{
 		FD_SET set;
 		FD_ZERO(&set);
-		FD_SET(s->socket, &set);
+		FD_SET(socket, &set);
 
 		struct timeval time;
 		time.tv_sec = 0;
@@ -213,16 +265,16 @@ inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
 
 	while (bytes < sizeof(NetHeader)) {
 		
-		i32 res = recvfrom(socket, buffer + bytes, buffer_capacity, 0, (struct sockaddr*)client, &client_size);
+		i32 res = recvfrom(socket, buffer + bytes, buffer_capacity, 0, hint, hint_size);
 		
 		if (res == SOCKET_ERROR) {
 
-			SV_LOG_ERROR("Error reciving from client\n");
+			SV_LOG_ERROR("Error reciving data\n");
 			return NULL;
 		}
 		else if (res <= 0) {
 
-			SV_LOG_ERROR("Invalid client format\n");
+			SV_LOG_ERROR("Invalid message format\n");
 			return NULL;
 		}
 
@@ -233,23 +285,32 @@ inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
 
 	while (bytes < sizeof(NetHeader) + header->size) {
 
-		i32 res = recvfrom(socket, buffer + bytes, buffer_capacity, 0, (struct sockaddr*)client, &client_size);
+		i32 res = recvfrom(socket, buffer + bytes, buffer_capacity, 0, hint, hint_size);
 		
 		if (res == SOCKET_ERROR) {
 
-			SV_LOG_ERROR("Error reciving from client\n");
+			SV_LOG_ERROR("Error reciving data\n");
 			return NULL;
 		}
 		else if (res <= 0) {
 
-			SV_LOG_ERROR("Invalid client format\n");
+			SV_LOG_ERROR("Invalid message format\n");
 			return NULL;
 		}
 
 		bytes += res;
 	}
-		
+
 	return header;
+}
+
+inline NetHeader* server_recive_message(struct sockaddr_in* client, u32 timeout)
+{
+	i32 client_size = sizeof(*client);
+
+	ServerData* s = net->server;
+
+	return _recive_message(s->buffer, s->buffer_capacity, s->socket, timeout, (struct sockaddr*)client, &client_size);
 }
 
 static u32 server_loop(void* arg)
@@ -272,11 +333,16 @@ static u32 server_loop(void* arg)
 				register_client_if_not_exists(client);
 				break;
 				
-			case HEADER_TYPE_DISCONNECT:
-				// TODO: unregister_client(client);
-				SV_LOG_INFO("Client unregistred\n");
-				break;
-
+			case HEADER_TYPE_DISCONNECT_CLIENT:
+			{
+				NetMessageDisconnectClient* msg = (NetMessageDisconnectClient*)header;
+				
+				u32 id = msg->client_id;
+				
+				unregister_client(id);
+			}
+			break;
+			
 			case HEADER_TYPE_CUSTOM_FROM_CLIENT:
 			{
 				NetMessageCustom* msg = (NetMessageCustom*)header;
@@ -310,7 +376,7 @@ static u32 server_loop(void* arg)
 	return 0;
 }
 
-b8 web_server_initialize(u32 port, u32 buffer_capacity, WebServerConnectionFn connection_fn, WebServerMessageFn message_fn)
+b8 web_server_initialize(u32 port, u32 client_capacity, u32 buffer_capacity, WebServerAcceptFn accept_fn, WebServerDisconnectFn disconnect_fn, WebServerMessageFn message_fn)
 {
 	net->server = memory_allocate(sizeof(ServerData));
 	ServerData* s = net->server;
@@ -344,14 +410,19 @@ b8 web_server_initialize(u32 port, u32 buffer_capacity, WebServerConnectionFn co
 	}
 
 	// Initialize some data
-	s->running = TRUE;
-	s->buffer_capacity = SV_MAX(buffer_capacity, 1000);
-	s->buffer = memory_allocate(s->buffer_capacity);
-	s->connection_fn = connection_fn;
-	s->message_fn = message_fn;
+	{
+		s->running = TRUE;
+		
+		s->buffer_capacity = SV_MAX(buffer_capacity, 1000);
+		s->buffer = memory_allocate(s->buffer_capacity);
 
-	// TEMP
-	s->registred_clients = array_init(ClientRegister, 10, 1.5f);
+		s->client_capacity = SV_MAX(client_capacity, 1);
+		s->clients = memory_allocate(sizeof(ClientRegister) * s->client_capacity);
+		
+		s->accept_fn = accept_fn;
+		s->disconnect_fn = disconnect_fn;
+		s->message_fn = message_fn;
+	}
 
 	// Start server thread
 	s->thread = thread_create(server_loop, NULL);
@@ -369,6 +440,9 @@ error:
 
 		s->running = FALSE;
 
+		if (s->buffer) memory_free(s->buffer);
+		if (s->clients) memory_free(s->clients);
+
 		if (s->thread) thread_destroy(s->thread);
 
 		memory_free(s);
@@ -381,19 +455,22 @@ success:
 
 void web_server_close()
 {
-	ServerData* s = &net->server;
+	ServerData* s = net->server;
 
 	if (s) {
 		s->running = FALSE;
 
 		NetHeader header;
-		header.type = HEADER_TYPE_DISCONNECT;
+		header.type = HEADER_TYPE_DISCONNECT_SERVER;
 		header.size = 0;
 
 		_server_send_all(&header, sizeof(NetHeader), NULL, 0);
 	
 		thread_wait(s->thread);
 		closesocket(s->socket);
+
+		memory_free(s->buffer);
+		memory_free(s->clients);
 
 		memory_free(s);
 		net->server = NULL;
@@ -404,7 +481,7 @@ b8 web_server_send(u32* clients, u32 client_count, b8 ignore, const void* data, 
 {
 	ServerData* s = net->server;
 
-	// TODO: Optimize
+	// TODO: Check if do multiple sends is more performant
 	u32 buffer_size = sizeof(NetHeader) + size;
 	u8* buffer = memory_allocate(buffer_size);
 
@@ -421,8 +498,13 @@ b8 web_server_send(u32* clients, u32 client_count, b8 ignore, const void* data, 
 		res = _server_send_all(buffer, buffer_size, clients, ignore ? client_count : 0);
 	}
 	else {
-		// TODO
-		res = FALSE;
+
+		foreach(i, client_count) {
+
+			if (!_server_send(buffer, buffer_size, s->clients[i].hint)) {
+				res = FALSE;
+			}
+		}
 	}
 
 	memory_free(buffer);
@@ -434,49 +516,9 @@ b8 web_server_send(u32* clients, u32 client_count, b8 ignore, const void* data, 
 
 inline NetHeader* client_recive_message(u32 timeout)
 {
-	ClientData* d = net->client;
+	ClientData* c = net->client;
 
-	u8* buffer = d->buffer;
-	u32 buffer_capacity = d->buffer_capacity;
-	SOCKET socket = d->socket;
-	
-	memory_zero(buffer, buffer_capacity);
-
-	b8 recived = FALSE;
-
-	// Wait for message
-	{
-		FD_SET set;
-		FD_ZERO(&set);
-		FD_SET(d->socket, &set);
-
-		struct timeval time;
-		time.tv_sec = 0;
-		time.tv_usec = timeout * 1000;
-
-		i32 res = select(0, &set, NULL, NULL, &time);
-
-		if (res > 0)
-			recived = TRUE;
-	}
-
-	// TODO: Recive safe
-	if (recived) {
-		
-		int bytes_in = recvfrom(socket, buffer, buffer_capacity, 0, NULL, NULL);
-
-		if (bytes_in == SOCKET_ERROR) {
-
-			SV_LOG_ERROR("Error reciving from server\n");
-			return NULL;
-		}
-	}
-	else return NULL;
-
-	u8* it = buffer;
-		
-	NetHeader* header = (NetHeader*)it;
-	return header;
+	return _recive_message(c->buffer, c->buffer_capacity, c->socket, timeout, NULL, NULL);
 }
 
 static u32 client_loop(void* arg)
@@ -501,7 +543,7 @@ static u32 client_loop(void* arg)
 				}
 				break;
 
-			case HEADER_TYPE_DISCONNECT:
+			case HEADER_TYPE_DISCONNECT_SERVER:
 				if (c->disconnect_fn) {
 					c->disconnect_fn(DisconnectReason_ServerDisconnected);
 				}
@@ -547,11 +589,19 @@ b8 web_client_initialize(const char* ip, u32 port, u32 buffer_capacity, WebClien
 	// Init some data
 	{
 		c->running = TRUE;
+		
 		c->buffer_capacity = SV_MAX(buffer_capacity, 1000);
 		c->buffer = memory_allocate(c->buffer_capacity);
+		
 		c->socket = socket(AF_INET, SOCK_DGRAM, 0);
+		
 		c->message_fn = message_fn;
 		c->disconnect_fn = disconnect_fn;
+
+		if (c->socket == INVALID_SOCKET) {
+			SV_LOG_ERROR("Can't create client socket\n");
+			goto error;
+		}
 	}
 
 	// Send connection message
@@ -560,7 +610,10 @@ b8 web_client_initialize(const char* ip, u32 port, u32 buffer_capacity, WebClien
 		msg.type = HEADER_TYPE_CONNECT;
 		msg.size = 0;
 
-		_client_send(&msg, sizeof(msg));
+		if (!_client_send(&msg, sizeof(msg))) {
+			SV_LOG_ERROR("Can't communicate with server\n");
+			goto error;
+		}
 	}
 
 	SV_LOG_INFO("Trying to connect to server\n");
@@ -574,15 +627,32 @@ b8 web_client_initialize(const char* ip, u32 port, u32 buffer_capacity, WebClien
 		SV_LOG_INFO("Connection accepted, client id = %u\n", c->id);
 	}
 	else {
-		// TODO
 		SV_LOG_ERROR("Accept message don't recived\n");
-		return FALSE;
+		goto error;
 	}
 
 	// Start thread
 	c->thread = thread_create(client_loop, NULL);
 	
-	// TODO: Handle errors
+	if (c->thread == NULL) goto error;
+
+	goto success;
+error:
+	if (c) {
+
+		c->running = FALSE;
+		
+		if (c->socket != INVALID_SOCKET) closesocket(c->socket);
+		if (c->buffer) memory_free(c->buffer);
+		if (c->thread) thread_destroy(c->thread);
+		
+		memory_free(c);
+		net->client = NULL;
+	}
+
+	return FALSE;
+	
+success:
 	return TRUE;
 }
 
@@ -595,12 +665,12 @@ void web_client_close()
 		c->running = FALSE;
 		memory_free(c->buffer);
 
-		NetMessageDisconnect msg;
-		msg.header.type = HEADER_TYPE_DISCONNECT;
-		msg.header.size = sizeof(NetMessageDisconnect) - sizeof(NetHeader);
-		msg.client_id = HEADER_TYPE_DISCONNECT;
+		NetMessageDisconnectClient msg;
+		msg.header.type = HEADER_TYPE_DISCONNECT_CLIENT;
+		msg.header.size = sizeof(NetMessageDisconnectClient) - sizeof(NetHeader);
+		msg.client_id = c->id;
 
-		_client_send(&msg, sizeof(NetMessageDisconnect));
+		_client_send(&msg, sizeof(NetMessageDisconnectClient));
 
 		thread_wait(c->thread);
 
@@ -618,14 +688,12 @@ b8 web_client_send(const void* data, u32 size)
 	msg.header.size = size + sizeof(u32);
 	msg.client_id = net->client->id;
 
+	// TODO: Check if is more performat doing a dynamic allocation
+	b8 res;
+	res = _client_send(&msg, sizeof(msg));
+	if (res) res =_client_send(data, size);
 
-	// TODO
-	u8 b[1000];
-	memory_zero(b, 1000);
-	memory_copy(b, &msg, sizeof(msg));
-	memory_copy(b + sizeof(msg), data, size);
-
-	return _client_send(b, sizeof(msg) + size);
+	return res;
 }
 
 b8 net_initialize()

@@ -4,10 +4,11 @@
 
 // WEB
 
-typedef void(*WebServerConnectionFn)(u32 client_id, b8 connection);
+typedef b8(*WebServerAcceptFn)(u32 client_id, const char* ip);
+typedef void(*WebServerDisconnectFn)(u32 client_id);
 typedef void(*WebServerMessageFn)(u32 client_id, const void* data, u32 size);
 
-b8   web_server_initialize(u32 port, u32 buffer_capacity, WebServerConnectionFn connection_fn, WebServerMessageFn message_fn);
+b8   web_server_initialize(u32 port, u32 client_capacity, u32 buffer_capacity, WebServerAcceptFn accept_fn, WebServerDisconnectFn disconnect_fn, WebServerMessageFn message_fn);
 void web_server_close();
 b8   web_server_send(u32* clients, u32 client_count, b8 ignore, const void* data, u32 size);
 

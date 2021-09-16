@@ -75,12 +75,15 @@ static void send_client_message(const char* str)
 
 #ifdef SERVER
 
-static void new_connection(u32 client_id, b8 connection)
+static b8 accept_connection(u32 client_id, const char* ip)
 {
-	if (connection)
-		SV_LOG_INFO("New Connection: %u\n", client_id);
-	else
-		SV_LOG_INFO("Client Disconnected: %u\n", client_id);
+	SV_LOG_INFO("Client Connected: %s\n", ip);
+	return TRUE;
+}
+
+static void disconnected(u32 client_id)
+{
+	SV_LOG_INFO("Client %u disconnected\n", client_id);
 }
 
 static void new_message(u32 client_id, const void* data, u32 size)
@@ -129,7 +132,7 @@ int main()
 		else break;
 	}
 
-	if (!web_server_initialize(port, 1000, new_connection, new_message)) {
+	if (!web_server_initialize(port, 1000, 100, accept_connection, disconnected, new_message)) {
 		SV_LOG_ERROR("Can't start the server\n");
 		return 1;
 	}
@@ -220,7 +223,7 @@ int main()
 	read_line(ip, 40);
 
 	if (string_size(ip) == 0) {
-		string_copy(ip, "192.168.216.235", 40);
+		string_copy(ip, "192.168.1.104", 40);
 	}
 
 	u32 port;
